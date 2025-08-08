@@ -302,7 +302,7 @@ impl SwiftLinker {
             command
                 // Build the package (duh)
                 .arg("build")
-                // NOTE(paris): Disable the sandbox because we build inside the Bazel sandbox, which 
+                // NOTE(paris): Disable the sandbox because we build inside the Bazel sandbox, which
                 // has its own sandbox. Without this we fail with:
                 // - `sandbox-exec: sandbox_apply: Operation not permitted`
                 .arg("--disable-sandbox")
