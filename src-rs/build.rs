@@ -293,9 +293,9 @@ impl SwiftLinker {
                 .join("swift-rs")
                 .join(&package.name);
 
-            // NOTE(paris): Fetch the SDK directly from cc because when running using hermetic 
-            // bazel, we do not have xcrun available in the xcode toolchain (it's an OSX host 
-            // library). So running it will use non-hermetic xcode toolchain and fail on CI machines 
+            // NOTE(paris): Fetch the SDK directly from cc because when running using hermetic
+            // bazel, we do not have xcrun available in the xcode toolchain (it's an OSX host
+            // library). So running it will use non-hermetic xcode toolchain and fail on CI machines
             // where it is not installed (and give incorrect paths even if it is installed).
             let sdk_path = if let Some(path) = self.sysroot_from_cc() {
                 path
@@ -312,7 +312,10 @@ impl SwiftLinker {
                     );
                 }
 
-                String::from_utf8(sdk_path_output.stdout).unwrap().trim().to_string()
+                String::from_utf8(sdk_path_output.stdout)
+                    .unwrap()
+                    .trim()
+                    .to_string()
             };
 
             let mut command = Command::new("swift");
