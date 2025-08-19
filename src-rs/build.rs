@@ -244,6 +244,27 @@ impl SwiftLinker {
         self
     }
 
+    // Gets the sysroot from cc by looking for the -sysroot flag. Used b/c neither SDKROOT nor
+    // SYSROOT environment variables are set when running using hermetic bazel.
+    fn sysroot_from_cc(&self) -> Option<String> {
+        let cc = std::env::var("CC").ok()?;
+        let out = Command::new(cc)
+            .args(["-v", "-E", "-"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let s = std::str::from_utf8(&out.stderr).ok()?;
+        let mut it = s.split_whitespace();
+        while let Some(t) = it.next() {
+            if t == "-isysroot" {
+                if let Some(p) = it.next() {
+                    return Some(p.to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Links the Swift runtime, then builds and links the provided packages.
     /// This does not (yet) automatically rebuild your Swift files when they are modified,
     /// you'll need to modify/save your `build.rs` file for that.
@@ -265,25 +286,37 @@ impl SwiftLinker {
 
         link_clang_rt(&rust_target);
 
-        for package in self.packages {
+        for package in &self.packages {
             let package_path =
                 Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join(&package.path);
             let out_path = Path::new(&env::var("OUT_DIR").unwrap())
                 .join("swift-rs")
                 .join(&package.name);
 
-            let sdk_path_output = Command::new("xcrun")
-                .args(["--sdk", &rust_target.sdk.to_string(), "--show-sdk-path"])
-                .output()
-                .unwrap();
-            if !sdk_path_output.status.success() {
-                panic!(
-                    "Failed to get SDK path with `xcrun --sdk {} --show-sdk-path`",
-                    rust_target.sdk
-                );
-            }
+            // NOTE(paris): Fetch the SDK directly from cc because when running using hermetic
+            // bazel, we do not have xcrun available in the xcode toolchain (it's an OSX host
+            // library). So running it will use non-hermetic xcode toolchain and fail on CI machines
+            // where it is not installed (and give incorrect paths even if it is installed).
+            let sdk_path = if let Some(path) = self.sysroot_from_cc() {
+                path
+            } else {
+                let sdk_path_output = Command::new("xcrun")
+                    .args(["--sdk", &rust_target.sdk.to_string(), "--show-sdk-path"])
+                    .output()
+                    .unwrap();
 
-            let sdk_path = String::from_utf8_lossy(&sdk_path_output.stdout);
+                if !sdk_path_output.status.success() {
+                    panic!(
+                        "Failed to get SDK path with `xcrun --sdk {} --show-sdk-path`",
+                        rust_target.sdk
+                    );
+                }
+
+                String::from_utf8(sdk_path_output.stdout)
+                    .unwrap()
+                    .trim()
+                    .to_string()
+            };
 
             let mut command = Command::new("swift");
             command.current_dir(&package.path);
@@ -323,8 +356,6 @@ impl SwiftLinker {
                 .args(["-Xswiftc", &swift_target_triple])
                 .args(["-Xcc", &format!("--target={swift_target_triple}")])
                 .args(["-Xcxx", &format!("--target={swift_target_triple}")]);
-
-            println!("Command `{command:?}`");
 
             if !command.status().unwrap().success() {
                 panic!("Failed to compile swift package {}", package.name);
