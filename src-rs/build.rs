@@ -34,18 +34,24 @@ impl SwiftEnv {
         minimum_ios_version: Option<&str>,
         minimum_visionos_version: Option<&str>,
     ) -> Self {
+        println!("cargo:warning=swift-rs: [build@new] minimum_macos_version: {minimum_macos_version:?}");
+        println!("cargo:warning=swift-rs: [build@new] minimum_ios_version: {minimum_ios_version:?}");
+        println!("cargo:warning=swift-rs: [build@new] minimum_visionos_version: {minimum_visionos_version:?}");
+
         let rust_target = RustTarget::from_env();
         let target = rust_target.swift_target_triple(
             minimum_macos_version,
             minimum_ios_version,
             minimum_visionos_version,
         );
+        println!("cargo:warning=swift-rs: [build@new] target: {target:?}");
 
         let swift_target_info_str = Command::new("swift")
             .args(["-target", &target, "-print-target-info"])
             .output()
             .unwrap()
             .stdout;
+        println!("cargo:warning=swift-rs: [build@new] swift_target_info_str: {}", String::from_utf8_lossy(&swift_target_info_str));
 
         serde_json::from_slice(&swift_target_info_str).unwrap()
     }
@@ -246,22 +252,62 @@ impl SwiftLinker {
 
     // Gets the sysroot from cc by looking for the -sysroot flag. Used b/c neither SDKROOT nor
     // SYSROOT environment variables are set when running using hermetic bazel.
-    fn sysroot_from_cc(&self) -> Option<String> {
+    fn sysroot_from_cc(&self, sdk: &str) -> Option<String> {
+        match sdk {
+            "macosx" => {
+                if let Ok(sdkroot) = std::env::var("OSX_SDK_ROOT") {
+                    println!("cargo:warning=cc: [build@sysroot_from_cc]: OSX_SDK_ROOT: {sdkroot}");
+                    return Some(sdkroot);
+                }
+            }
+            "iphonesimulator" => {
+                if let Ok(sdkroot) = std::env::var("IPHONE_SIMULATOR_SDK_ROOT") {
+                    println!("cargo:warning=cc: [build@sysroot_from_cc]: IPHONE_SIMULATOR_SDK_ROOT: {sdkroot}");
+                    return Some(sdkroot);
+                }
+            }
+            "iphoneos" => {
+                if let Ok(sdkroot) = std::env::var("IPHONE_SDK_ROOT") {
+                    println!("cargo:warning=cc: [build@sysroot_from_cc]: IPHONE_SDK_ROOT: {sdkroot}");
+                    return Some(sdkroot);
+                }
+            }
+            _ => {}
+        }
+        // Print out all environment variables
+        // for (key, value) in std::env::vars() {
+        //     println!("cargo:warning=swift-rs: [build@sysroot_from_cc] {key}: {value:?}");
+        // }
+
+        // println!("cargo:warning=swift-rs: [build@sysroot_from_cc] OSX_SDK_ROOT: {}", std::env::var("OSX_SDK_ROOT").unwrap_or_default());
+        // if let Some(sdkroot) = std::env::var("OSX_SDK_ROOT").ok() {
+        //     println!("cargo:warning=cc: [build@sysroot_from_cc]: sdkroot: {sdkroot:?}");
+        //     if !sdkroot.is_empty() {
+        //         println!("cargo:warning=swift-rs: [build@sysroot_from_cc] SDKROOT is not empty");
+        //         return Some(sdkroot);
+        //     }
+        // }
+
         let cc = std::env::var("CC").ok()?;
+        // println!("cargo:warning=swift-rs: [build@sysroot_from_cc] cc: {cc:?}");
         let out = Command::new(cc)
             .args(["-v", "-E", "-"])
             .stdin(std::process::Stdio::null())
             .output()
             .ok()?;
+        // println!("cargo:warning=swift-rs: [build@sysroot_from_cc] out: {out:?}");
         let s = std::str::from_utf8(&out.stderr).ok()?;
+        // println!("cargo:warning=swift-rs: [build@sysroot_from_cc] s: {s:?}");
         let mut it = s.split_whitespace();
         while let Some(t) = it.next() {
+            // println!("cargo:warning=swift-rs: [build@sysroot_from_cc] t: {t:?}");
             if t == "-isysroot" {
                 if let Some(p) = it.next() {
                     return Some(p.to_string());
                 }
             }
         }
+        println!("cargo:warning=swift-rs: [build@sysroot_from_cc] None");
         None
     }
 
@@ -269,6 +315,8 @@ impl SwiftLinker {
     /// This does not (yet) automatically rebuild your Swift files when they are modified,
     /// you'll need to modify/save your `build.rs` file for that.
     pub fn link(self) {
+        println!("cargo:warning=swift-rs: [build@link] ------------------------");
+
         let swift_env = SwiftEnv::new(
             &self.macos_min_version,
             self.ios_min_version.as_deref(),
@@ -277,11 +325,15 @@ impl SwiftLinker {
 
         #[allow(clippy::uninlined_format_args)]
         for path in swift_env.paths.runtime_library_paths {
+            println!("cargo:warning=swift-rs: [build@link] runtime_library_path: {path:?}");
             println!("cargo:rustc-link-search=native={path}");
         }
+        // println!("cargo:rustc-link-search=native=/Users/paris/Downloads/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos");
 
         let debug = env::var("DEBUG").unwrap() == "true";
+        println!("cargo:warning=swift-rs: [build@link] debug: {debug:?}");
         let configuration = if debug { "debug" } else { "release" };
+        println!("cargo:warning=swift-rs: [build@link] configuration: {configuration:?}");
         let rust_target = RustTarget::from_env();
 
         link_clang_rt(&rust_target);
@@ -289,21 +341,29 @@ impl SwiftLinker {
         for package in &self.packages {
             let package_path =
                 Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join(&package.path);
+            println!("cargo:warning=swift-rs: [build@link] package_path: {package_path:?}");
             let out_path = Path::new(&env::var("OUT_DIR").unwrap())
                 .join("swift-rs")
                 .join(&package.name);
+            println!("cargo:warning=swift-rs: [build@link] out_path: {out_path:?}");
 
             // NOTE(paris): Fetch the SDK directly from cc because when running using hermetic
             // bazel, we do not have xcrun available in the xcode toolchain (it's an OSX host
             // library). So running it will use non-hermetic xcode toolchain and fail on CI machines
             // where it is not installed (and give incorrect paths even if it is installed).
-            let sdk_path = if let Some(path) = self.sysroot_from_cc() {
+            println!("cargo:warning=swift-rs: [build@link] rust_target.sdk: {}", rust_target.sdk.to_string());
+            let sdk_path_from_cc = self.sysroot_from_cc(&rust_target.sdk.to_string());
+            println!("cargo:warning=swift-rs: [build@link] sdk_path_from_cc: {sdk_path_from_cc:?}");
+            let sdk_path = if let Some(path) = sdk_path_from_cc {
+                println!("cargo:warning=swift-rs: [build@link] path: {path:?}");
                 path
             } else {
+                println!("cargo:warning=swift-rs: [build@link] xcrun");
                 let sdk_path_output = Command::new("xcrun")
                     .args(["--sdk", &rust_target.sdk.to_string(), "--show-sdk-path"])
                     .output()
                     .unwrap();
+                println!("cargo:warning=swift-rs: [build@link] sdk_path_output: {sdk_path_output:?}");
 
                 if !sdk_path_output.status.success() {
                     panic!(
@@ -317,20 +377,25 @@ impl SwiftLinker {
                     .trim()
                     .to_string()
             };
+            println!("cargo:warning=swift-rs: [build@link] sdk_path: {sdk_path:?}");
 
             let mut command = Command::new("swift");
+            println!("cargo:warning=swift-rs: [build@link] command: {command:?}");
             command.current_dir(&package.path);
+            println!("cargo:warning=swift-rs: [build@link] package.path: {}", package.path.display());
 
             let arch = match std::env::consts::ARCH {
                 "aarch64" => "arm64",
                 arch => arch,
             };
+            println!("cargo:warning=swift-rs: [build@link] arch: {arch:?}");
 
             let swift_target_triple = rust_target.swift_target_triple(
                 &self.macos_min_version,
                 self.ios_min_version.as_deref(),
                 self.visionos_min_version.as_deref(),
             );
+            println!("cargo:warning=swift-rs: [build@link] swift_target_triple: {swift_target_triple:?}");
 
             command
                 // Build the package (duh)
@@ -357,7 +422,10 @@ impl SwiftLinker {
                 .args(["-Xcc", &format!("--target={swift_target_triple}")])
                 .args(["-Xcxx", &format!("--target={swift_target_triple}")]);
 
+            println!("cargo:warning=swift-rs: [build@link] command.status(): {}", command.status().unwrap());
+
             if !command.status().unwrap().success() {
+                println!("cargo:warning=swift-rs: [build@link] Failed to compile swift package {}", package.name);
                 panic!("Failed to compile swift package {}", package.name);
             }
 
@@ -365,10 +433,15 @@ impl SwiftLinker {
                 // swift build uses this output folder no matter what is the target
                 .join(format!("{}-apple-macosx", arch))
                 .join(configuration);
+            println!("cargo:warning=swift-rs: [build@link] package_path: {}", package_path.display());
+            println!("cargo:warning=swift-rs: [build@link] search_path: {}", search_path.display());
+            println!("cargo:warning=swift-rs: [build@link] package.name: {}", package.name);
 
             println!("cargo:rerun-if-changed={}", package_path.display());
             println!("cargo:rustc-link-search=native={}", search_path.display());
             println!("cargo:rustc-link-lib=static={}", package.name);
+
+            println!("cargo:warning=swift-rs: [build@link] DONE! ------------------------");
         }
     }
 }
@@ -388,6 +461,7 @@ fn clang_link_search_path() -> String {
     .arg("--print-search-dirs")
     .output()
     .unwrap();
+    println!("cargo:warning=swift-rs: [build@link_clang_rt] output: {output:?}");
     if !output.status.success() {
         panic!("Can't get search paths from clang");
     }
